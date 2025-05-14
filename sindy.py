@@ -1,6 +1,9 @@
 import numpy as np, pandas as pd, pysindy as ps
 from pyworld3 import World3
 
+from sklearn.metrics import mean_squared_error
+from pysindy.differentiation import FiniteDifference
+
 
 # -- 0. simulate standard World3 run -----------------------------------------
 w = World3(year_min=1900, year_max=2100, dt=0.1)
@@ -42,8 +45,8 @@ state += ['al','pal','uil','lfert']
 ctrl  += ['alai','lyf','ifpc','lymap','llmy','fioaa']
 
 # Capital sector
-# state += ['ic','sc']
-# ctrl  += ['icor','scor','alic','alsc','fioac','isopc','fioas']
+state += ['ic','sc']
+ctrl  += ['icor','scor','alic','alsc','fioac','isopc','fioas']
 
 # Pollution
 state += ['ppol']
@@ -54,23 +57,49 @@ state += ['p1','p2','p3','p4']
 ctrl  += ['lmhs']
 
 # Resource sector
-# state += ['nr']
-# ctrl  += ['nruf','fcaor']
+state += ['nr']
+ctrl  += ['nruf','fcaor']
 
-X = np.column_stack([getattr(w,s) for s in state])   # (T,12)
-U = np.column_stack([getattr(w,c) for c in ctrl])    # (T,18)
+
+X = np.column_stack([getattr(w,s) for s in state])                          # (T,12)
+U = np.column_stack([getattr(w,c) for c in ctrl]) if len(ctrl) else None    # (T,18)
 dt = w.dt
 
 # -- 1. fit with controls -----------------------------------------------------
-model   = ps.SINDy()
-model.fit(X, u=U, t=dt)
+model = ps.SINDy(feature_library=ps.PolynomialLibrary(degree=1))
+model.fit(X, u=U if ctrl else None, t=dt)
 model.print()
 
 # -- 2. forecast 150 yr & compute *relative* RMSE -----------------------------
-n_pred = 151
+n_pred = 1500
 X_pred = model.simulate(X[0], t=np.arange(n_pred)*dt, u=U[:n_pred])
 rel_rmse = np.sqrt(((X_pred - X[:n_pred-1])**2).mean(axis=0)) / (np.abs(X[:n_pred-1]).max(axis=0))
 print("\nRelative RMSE (%%):")
 print(pd.Series(rel_rmse*100, index=state).round(2))
 
-print("Model score: %f" % model.score(X, u=U, t=dt))
+print("Model score: %f" % model.score(X, u=U if ctrl else None, t=dt))
+
+# 3.  Plot the data ---------------------------------------------------------------
+import matplotlib.pyplot as plt
+
+# Create time vector (in years)
+t_pred = np.arange(n_pred-1) * dt + 1900
+n_vars = len(state)
+
+# Generate a color map
+colors = plt.cm.get_cmap('tab20', n_vars)  # or 'tab20' if more than 10 vars
+
+# Plot each state variable: true vs predicted
+plt.figure(figsize=(12, 6))
+for i, name in enumerate(state):
+    color = colors(i % colors.N)
+    plt.plot(t_pred, X[:int(n_pred-1), i], label=f"{name} (true)", linestyle='--', color=color)
+    plt.plot(t_pred, X_pred[:, i], label=f"{name} (pred)", linewidth=1.2, color=color)
+
+plt.xlabel("Year")
+plt.ylabel("State value")
+plt.title("Predicted vs. True Trajectories")
+plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', ncol=1)
+plt.tight_layout()
+plt.grid(True)
+plt.show()
