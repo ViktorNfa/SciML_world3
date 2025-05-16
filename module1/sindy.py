@@ -3,7 +3,7 @@ from pyworld3 import World3
 import matplotlib.pyplot as plt
 
 
-# –– 0. simulate standard World3 run ––-----------------------------------------
+# –– 0. Simulate standard World3 run ––-----------------------------------------
 y_min = 1900
 y_max = 2200
 dt = 0.1
@@ -44,12 +44,12 @@ X  = np.column_stack([getattr(w, s) for s in state])
 U  = np.column_stack([getattr(w, c) for c in ctrl])
 dt = w.dt
 
-# –– 1. split into training / test sets (70 % / 30 %) --------------------------
+# –– 1. Split into training / test sets (70 % / 30 %) --------------------------
 split = int(0.7 * len(X))
 X_train, X_test = X[:split], X[split:]
 U_train, U_test = U[:split], U[split:]
 
-# –– 2. fit SINDy on **training** data -----------------------------------------
+# –– 2. Fit SINDy on **training** data -----------------------------------------
 model = ps.SINDy(feature_library=ps.PolynomialLibrary(degree=2))
 model.fit(X_train, u=U_train, t=dt)
 model.print()
@@ -66,7 +66,7 @@ rel_rmse = np.sqrt(((X_pred - X_test[:-1])**2).mean(axis=0)) / (np.abs(X_test[:-
 print("\nRelative RMSE (%%):")
 print(pd.Series(rel_rmse*100, index=state).round(2))
 
-# –– 3. plot -------------------------------------------------------------------
+# –– 3. Plot -------------------------------------------------------------------
 # Create time vector (in years)
 t_start = 1900 + split * dt 
 t_plot  = t_vec[:-1] + t_start
@@ -90,7 +90,7 @@ plt.tight_layout()
 plt.grid(True)
 plt.show()
 
-# –– 4. EXTRA PLOT : whole data set (training + test) –– ----------------------
+# –– 4. Extra plot: whole data set (training + test) –– ------------------------
 t_full = np.arange(len(X)) * dt + 1900
 X_pred_full = model.simulate(X[0], t_full, u=U)
 
