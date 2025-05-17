@@ -2,6 +2,8 @@ import numpy as np, pandas as pd, pysindy as ps
 from pyworld3 import World3
 import matplotlib.pyplot as plt
 
+from sklearn.preprocessing import StandardScaler
+
 
 # –– 0. Simulate standard World3 run ––-----------------------------------------
 y_min = 1900
@@ -38,11 +40,16 @@ state = ['ppol', 'p1', 'p2', 'p3', 'p4']
 # Choose Controls:
 # - Persistent Pollution Generation Factor (PPGF), Persistent Pollution Transmission Delay (PPTD).
 # - Lifetime Multiplier from Health Services (LMHS).
-ctrl  = ['ppgf', 'pptd', 'lmhs']
+ctrl = ['ppgf', 'pptd', 'lmhs']
 
-X  = np.column_stack([getattr(w, s) for s in state])
-U  = np.column_stack([getattr(w, c) for c in ctrl])
-dt = w.dt
+X = np.column_stack([getattr(w, s) for s in state])
+U = np.column_stack([getattr(w, c) for c in ctrl])
+
+# # Scale data to [0,1]
+# scaler_X = StandardScaler().fit(X)
+# scaler_U = StandardScaler().fit(U)
+# X = scaler_X.transform(X)
+# U = scaler_U.transform(U)
 
 # –– 1. Split into training / test sets (70 % / 30 %) --------------------------
 split = int(0.7 * len(X))
@@ -57,23 +64,34 @@ print("\nTraining score: %.4f" % model.score(X_train, u=U_train, t=dt))
 print("\nTest score: %f" % model.score(X_test, u=U_test, t=dt))
 print("\nModel score: %f" % model.score(X, u=U, t=dt))
 
-# -- 3. forecast 150 yr & compute *relative* RMSE -----------------------------
-n_pred  = len(X_test)
-t_vec   = np.arange(n_pred) * dt
-X_pred  = model.simulate(X_test[0], t=t_vec, u=U_test)
+# -- 3. forecast 150 yr & compute RMSE -----------------------------------------
+n_pred = len(X_test)
+t_vec = np.arange(n_pred) * dt
+X_pred = model.simulate(X_test[0], t=t_vec, u=U_test)
 
-rel_rmse = np.sqrt(((X_pred - X_test[:-1])**2).mean(axis=0)) / (np.abs(X_test[:-1]).max(axis=0))
-print("\nRelative RMSE (%%):")
+# If any of the state variables are negative, set them to zero
+X_pred[X_pred < 0] = 0
+
+rel_rmse = np.sqrt(((X_pred - X_test[:-1])**2).mean(axis=0))
+print("\nRMSE:")
+print(pd.Series(rel_rmse*100, index=state).round(2))
+
+# rel_rmse = np.sqrt(((X_pred - X_test[:-1])**2).mean(axis=0)) / (np.abs(X_test[:-1]).max(axis=0))
+# print("\nRelative RMSE-1 (%%):")
+# print(pd.Series(rel_rmse*100, index=state).round(2))
+
+rel_rmse = np.sqrt(((X_pred - X_test[:-1])**2).mean(axis=0)) / (np.abs(X_test[:-1]).max(axis=0).max(axis=0))
+print("\nRelative RMSE-2 (%%):")
 print(pd.Series(rel_rmse*100, index=state).round(2))
 
 # –– 3. Plot -------------------------------------------------------------------
 # Create time vector (in years)
-t_start = 1900 + split * dt 
-t_plot  = t_vec[:-1] + t_start
+t_start = y_min + split * dt 
+t_plot = t_vec[:-1] + t_start
 n_vars = len(state)
 
 # Generate a color map
-colors  = plt.get_cmap('tab10', len(state))
+colors = plt.get_cmap('tab10', len(state))
 
 # Plot each state variable: true vs predicted
 plt.figure(figsize=(12, 6))
@@ -91,8 +109,11 @@ plt.grid(True)
 plt.show()
 
 # –– 4. Extra plot: whole data set (training + test) –– ------------------------
-t_full = np.arange(len(X)) * dt + 1900
+t_full = np.arange(len(X))*dt + y_min
 X_pred_full = model.simulate(X[0], t_full, u=U)
+
+# If any of the state variables are negative, set them to zero
+X_pred_full[X_pred_full < 0] = 0
 
 t_plot_full = t_full[:-1]
 

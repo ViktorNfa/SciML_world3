@@ -8,6 +8,24 @@ torch.manual_seed(0)
 # -- 0. Get simulation data ---------------------------------------------------
 y_min, y_max, dt = 1900, 2200, 0.1
 w = World3(year_min=y_min, year_max=y_max, dt=dt)
+
+# def exciting_signal(t):
+#     return np.vstack([
+#         1.0 + 0.2*np.sin(0.1*t),               # ppgf
+#         1.0 + 0.3*np.sin(0.07*t + 1.0),        # pptd
+#         1.0 + 0.1*np.sin(0.2*t + 2.0)          # lmhs
+#     ]).T
+
+# # Define exciting input functions for each control
+# t_input = np.arange(y_min, y_max, dt)
+# exciting_u = exciting_signal(t_input)
+
+# w.set_world3_control(
+#     ppgf_control = lambda t: float(np.interp(t, t_input, exciting_u[:,0])),
+#     pptd_control = lambda t: float(np.interp(t, t_input, exciting_u[:,1])),
+#     lmhs_control = lambda t: float(np.interp(t, t_input, exciting_u[:,2]))
+# )
+
 w.set_world3_control()
 w.init_world3_constants(); w.init_world3_variables()
 w.set_world3_table_functions(); w.set_world3_delay_functions()
@@ -20,12 +38,19 @@ X  = np.column_stack([getattr(w,s) for s in state]).astype(np.float32)
 U  = np.column_stack([getattr(w,c) for c in ctrl]).astype(np.float32)
 t  = np.arange(len(X), dtype=np.float32).reshape(-1,1) * dt # relative time
 
-Sx, Su = X.max(0, keepdims=True), U.max(0, keepdims=True)
-Xs, Us = X/Sx, U/Su
+# Scale data to [0,1]
+from sklearn.preprocessing import StandardScaler
+scaler_X = StandardScaler().fit(X)
+scaler_U = StandardScaler().fit(U)
+X = scaler_X.transform(X)
+U = scaler_U.transform(U)
+
+# Sx, Su = X.max(0, keepdims=True), U.max(0, keepdims=True)
+# Xs, Us = X/Sx, U/Su
 
 split = int(0.7*len(X))
-Xtr, Xte = Xs[:split], Xs[split:]
-Utr, Ute = Us[:split], Us[split:]
+Xtr, Xte = X[:split], X[split:]
+Utr, Ute = U[:split], U[split:]
 ttr, tte = t[:split], t[split:]
 
 # -- 1. PINN-SR components ----------------------------------------------------
@@ -61,16 +86,28 @@ Utr_t  = torch.tensor(Utr,  device=device)
 ttr_t  = torch.tensor(ttr,  device=device, requires_grad=True)
 
 optimizer = optim.Adam(list(net.parameters())+[Xi], lr=1e-3)
-lambda_pde, lambda_l1 = 1.0, 1e-4 # weights for residual & sparsity
+lambda_pde, lambda_l1 = 10.0, 1e-4 # weights for residual & sparsity
 
 for epoch in range(3000):
     optimizer.zero_grad()
 
     x_pred = net(ttr_t) # NN output
-    # autograd d/dt (vector-Jacobian)
-    x_dot  = torch.autograd.grad(x_pred, ttr_t,
-                                 grad_outputs=torch.ones_like(x_pred),
-                                 create_graph=True)[0]
+    x_dot = torch.autograd.grad(x_pred, ttr_t,
+                                torch.ones_like(x_pred),
+                                create_graph=True)[0]
+
+    # # build an N×5 x_dot matrix
+    # x_dot_cols = []
+    # for i in range(x_pred.shape[1]):
+    #     # sum over the i-th column to get a scalar per time step
+    #     grad_i = torch.autograd.grad(
+    #         x_pred[:, i].sum(),    # scalar sum over batch for channel i
+    #         ttr_t,
+    #         create_graph=True
+    #     )[0]                       # shape (N,1)
+    #     x_dot_cols.append(grad_i)
+
+    # x_dot = torch.cat(x_dot_cols, dim=1)  # now shape (N,5)
 
     Phi = poly_library(x_pred, Utr_t)
     res = x_dot - Phi @ Xi # PDE residual
@@ -82,10 +119,6 @@ for epoch in range(3000):
     loss.backward()
     optimizer.step()
 
-    # soft thresholding (simple sparsity enforcement)
-    with torch.no_grad():
-        Xi.data[Xi.abs() < 0.02] = 0.
-
     if epoch % 500 == 0:
         print(f"epoch {epoch:4d}  loss={loss.item():.3e}")
 
@@ -94,9 +127,20 @@ print("\nSparse Xi coefficients (non-zero):")
 print(pd.DataFrame(Xi_np, columns=state).loc[(Xi_np!=0).any(1)])
 
 # –– 3. Simulate with phi·Xi --------------------------------------------------
-def dxdt(x,u):
-    x,u = torch.tensor(x), torch.tensor(u)
-    return (poly_library(x.unsqueeze(0),u.unsqueeze(0)) @ Xi).squeeze(0).detach().numpy()
+def dxdt(x, u):
+    # scale down
+    x_s = x
+    u_s = u
+
+    # library on the scaled point
+    Phi = poly_library(
+        torch.tensor(x_s, dtype=torch.float32).unsqueeze(0),
+        torch.tensor(u_s, dtype=torch.float32).unsqueeze(0),
+    )
+
+    # compute scaled derivative and rescale back
+    dxs = (Phi @ Xi).squeeze(0).detach().numpy()      # d x_s / dt
+    return dxs                        # d x / dt
 
 def euler_sim(x0, Useq):
     x_hist = [x0]
@@ -106,12 +150,19 @@ def euler_sim(x0, Useq):
     return np.vstack(x_hist)
 
 X_pred_te = euler_sim(Xte[0], Ute) # test prediction
-rmse_rel  = (np.sqrt(((X_pred_te-Xte)**2).mean(0))
-            / np.abs(Xte).max(0))
 
 # –– 4. Reporting & plots -----------------------------------------------------
-print("\nRelative RMSE (%%):")
+rmse_rel  = np.sqrt(((X_pred_te-Xte)**2).mean(axis=0))
+print("\nRMSE:")
 print(pd.Series(rmse_rel*100, index=state).round(2))
+
+rel_rmse = np.sqrt(((X_pred_te - Xte)**2).mean(axis=0)) / (np.abs(Xte).max(axis=0))
+print("\nRelative RMSE-1 (%%):")
+print(pd.Series(rel_rmse*100, index=state).round(2))
+
+rel_rmse = np.sqrt(((X_pred_te - Xte)**2).mean(axis=0)) / (np.abs(Xte).max(axis=0).max(axis=0))
+print("\nRelative RMSE-2 (%%):")
+print(pd.Series(rel_rmse*100, index=state).round(2))
 
 # ------------ plot test window ------------
 t_plot = t[split:].flatten() + y_min
@@ -127,6 +178,7 @@ plt.legend(bbox_to_anchor=(1.05,1), loc='upper left'); plt.tight_layout(); plt.s
 
 # ------------ plot full window ------------
 X_pred_full = euler_sim(X[0], U) # full run
+
 t_full = t.flatten() + y_min
 
 plt.figure(figsize=(12,6))
@@ -136,3 +188,15 @@ for i,s in enumerate(state):
 plt.axvline(y_min+split*dt, color='k', ls=':', lw=1)
 plt.title('PINN-SR - full trajectory'); plt.xlabel('Year'); plt.grid()
 plt.legend(bbox_to_anchor=(1.05,1), loc='upper left'); plt.tight_layout(); plt.show()
+
+rmse_rel  = np.sqrt(((X_pred_full-X)**2).mean(axis=0))
+print("\nFull-traj RMSE:")
+print(pd.Series(rmse_rel*100, index=state).round(2))
+
+rel_rmse = np.sqrt(((X_pred_full - X)**2).mean(axis=0)) / (np.abs(X).max(axis=0))
+print("\nFull-traj Relative RMSE-1 (%%):")
+print(pd.Series(rel_rmse*100, index=state).round(2))
+
+rel_rmse = np.sqrt(((X_pred_full - X)**2).mean(axis=0)) / (np.abs(X).max(axis=0).max(axis=0))
+print("\nFull-traj Relative RMSE-2 (%%):")
+print(pd.Series(rel_rmse*100, index=state).round(2))
